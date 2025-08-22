@@ -2,27 +2,54 @@
 name: "Update upstream version"
 
 sources:
- upstream:
-   name: Get upstream version
-   kind: githubrelease
-   spec:
-     owner: kubernetes-sigs
-     repository: node-feature-discovery
-     token: '{{ requiredEnv .github.token }}'
-     typefilter:
-       release: true
-       draft: false
-       prerelease: false
-     versionfilter:
-       kind: semver
-       pattern: "~0.15"
+  githubrelease:
+    name: Get upstream release
+    kind: githubrelease
+    spec:
+      owner: '{{ .scm.upstream.owner }}'
+      repository: '{{ .scm.upstream.repository }}'
+      token: '{{ requiredEnv .github.token }}'
+      typefilter:
+        release: true
+        draft: false
+        prerelease: false
+      versionfilter:
+        kind: semver
+
+  gomod:
+    name: Get golang version
+    kind: file
+    dependson:
+      - githubrelease
+    spec:
+      file: 'https://raw.githubusercontent.com/{{ .scm.upstream.owner }}/{{ .scm.upstream.repository }}/{{ source "githubrelease" }}/go.mod'
+      matchpattern: 'go ([0-9]+\.[0-9]+)'
+    transformers:
+      - trimprefix: "go "
+
+  buildbase:
+    name: Get build base version
+    kind: githubrelease
+    dependson:
+      - gomod
+    spec:
+      token: '{{ requiredEnv .github.token }}'
+      owner: '{{ .scm.buildbase.owner }}'
+      repository: '{{ .scm.buildbase.repository }}'
+      typefilter:
+        release: true
+        draft: false
+        prerelease: false
+      versionfilter:
+        kind: regex
+        pattern: '{{ source "gomod"}}\.\S+'
 
 targets:
   dockerfile:
-    name: 'Bump Dockerfile to upstream version {{ source "upstream" }}'
+    name: 'Bump Dockerfile to upstream version {{ source "githubrelease" }}'
     kind: dockerfile
     scmid: default
-    sourceid: upstream
+    sourceid: githubrelease
     spec:
       file: "Dockerfile"
       instruction:
@@ -30,14 +57,27 @@ targets:
         matcher: "TAG"
 
   makefile:
-    name: 'Bump Makefile to upstream version {{ source "upstream" }}'
+    name: 'Bump Makefile to upstream version {{ source "githubrelease" }}'
     kind: file
     scmid: default
     disablesourceinput: true
     spec:
       file: Makefile
       matchpattern: '(?m)^TAG \:\= (.*)'
-      replacepattern: 'TAG := {{ source "upstream" }}$$(BUILD_META)'
+      replacepattern: 'TAG := {{ source "githubrelease" }}$$(BUILD_META)'
+
+  buildbase:
+    name: 'Bump to build base version {{ source "buildbase" }}'
+    kind: dockerfile
+    scmid: default
+    sourceid: buildbase
+    spec:
+      file: Dockerfile
+      instruction:
+        keyword: ARG
+        matcher: "GO_IMAGE"
+    transformers:
+      - addprefix: "rancher/hardened-build-base:"
 
 scms:
   default:
@@ -47,18 +87,18 @@ scms:
       username: '{{ requiredEnv .github.username }}'
       user: '{{ .github.user }}'
       email: '{{ .github.email }}'
-      owner: '{{ .github.owner }}'
-      repository: '{{ .github.repository }}'
-      branch: '{{ .github.branch }}'
+      owner: '{{ .scm.default.owner }}'
+      repository: '{{ .scm.default.repository }}'
+      branch: '{{ .scm.default.branch }}'
 
 actions:
-    default:
-        title: 'Bump to upstream version {{ source "upstream" }}'
-        kind: github/pullrequest
-        spec:
-            automerge: false
-            labels:
-                - chore
-                - skip-changelog
-                - status/auto-created
-        scmid: default
+  default:
+    title: 'Bump to upstream version {{ source "githubrelease" }}'
+    kind: github/pullrequest
+    spec:
+      automerge: false
+      labels:
+        - chore
+        - skip-changelog
+        - status/auto-created
+    scmid: default
